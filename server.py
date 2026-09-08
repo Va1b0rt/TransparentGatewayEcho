@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 import uuid
+from pathlib import Path
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -13,6 +14,25 @@ from urllib.parse import urlsplit
 HEADERS = ('host', 'user-agent', 'x-request-id', 'forwarded', 'x-forwarded-for',
            'x-real-ip', 'via', 'client-ip', 'x-client-ip', 'true-client-ip',
            'x-cluster-client-ip', 'x-original-forwarded-for')
+
+
+CLOUDFLARE_NETWORKS = tuple(ipaddress.ip_network(line.strip()) for line in
+    Path(__file__).with_name('cloudflare-ips.txt').read_text().splitlines()
+    if line.strip() and not line.startswith('#'))
+
+
+def resolve_peer(headers):
+    transport = ipaddress.ip_address(headers.get('X-TG-Peer', ''))
+    if any(transport in network for network in CLOUDFLARE_NETWORKS):
+        # Only the bundled Caddy can set the transport peer. Never trust CF headers
+        # merely because a direct Internet client supplied them.
+        if headers.get('CF-Worker'):
+            raise ValueError('Worker subrequests have different identity semantics')
+        peer = ipaddress.ip_address(headers.get('CF-Connecting-IP', ''))
+        if not peer.is_global:
+            raise ValueError('public Cloudflare client identity required')
+        return str(peer), 'cloudflare_cf_connecting_ip'
+    return str(transport), 'caddy_tcp_peer'
 
 
 class RateLimiter:
@@ -77,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/healthz' and self.client_address[0] == '127.0.0.1':
                 self.reply(200, {'status':'ok'}, log=False)
                 return
-            peer = str(ipaddress.ip_address(self.headers.get('X-TG-Peer', '')))
+            peer, peer_source = resolve_peer(self.headers)
             if not self.server.limiter.allow(peer):
                 self.reply(429, {'error':'rate_limited'}, {'Retry-After':str(self.server.limiter.period)})
                 return
@@ -100,7 +120,8 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     headers[name] = value
             self.reply(200, {'backend_peer':peer, 'headers':headers, 'method':'GET',
-                             'peer_source':'caddy_tcp_peer'})
+                             'peer_source':peer_source,
+                             'headers_view': 'after_cloudflare' if peer_source.startswith('cloudflare') else 'direct'})
         except (ValueError, TypeError):
             self.reply(400, {'error':'invalid_request'})
         except (OSError, socket.timeout):

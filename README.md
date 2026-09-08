@@ -5,10 +5,13 @@ Docker Compose запускає Caddy і невеликий Python backend бе�
 
 ## Розгортання на віддаленому сервері
 
-Потрібні Docker Engine з Compose v2, публічна IP сервера та домен, наприклад
-`echo.example.com`. A-запис має вказувати прямо на сервер. Якщо DNS обслуговує
-Cloudflare, використовуйте **DNS only**, без CDN/proxy: для вимірювання потрібна
-адреса TCP-клієнта саме вашого сервера. AAAA додавайте лише з робочим IPv6-доступом.
+Потрібні Docker Engine з Compose v2 та Cloudflare **Proxied + SSL/TLS Full**.
+Для поточного стенда: `echo.devdays.net.ua` → A `203.0.113.10`, помаранчева хмаринка.
+Caddy автоматично випускає локальний сертифікат від власного CA (`tls internal`).
+Зовнішнього ACME, email і Cloudflare API token не потрібно. Сертифікат для відвідувачів
+обслуговує Cloudflare. Цей локальний origin-сертифікат підходить для **Full**, але
+не для **Full (strict)**. Full шифрує origin-з'єднання, не перевіряючи довіру до його
+сертифіката. AAAA додавайте лише з робочим IPv6-доступом.
 Порти TCP80/443 мають бути доступні з інтернету й вільні на сервері.
 
 Склонуйте цей репозиторій або розпакуйте наданий архів, перейдіть у каталог проєкту:
@@ -19,11 +22,10 @@ chmod 600 .env
 nano .env
 ```
 
-Вкажіть свої значення:
+Достатньо такого `.env` (старий рядок `ACME_EMAIL` можна видалити):
 
 ```dotenv
-ECHO_DOMAIN=echo.example.com
-ACME_EMAIL=you@example.com
+ECHO_DOMAIN=echo.devdays.net.ua
 RATE_LIMIT=60
 RATE_PERIOD=60
 ```
@@ -34,17 +36,17 @@ RATE_PERIOD=60
 docker compose config --quiet
 docker compose up -d --build --wait
 docker compose ps
-python3 verify.py https://echo.example.com/
+python3 verify.py https://echo.devdays.net.ua/
 ```
 
-Caddy автоматично отримає й надалі оновлюватиме TLS-сертифікат. Успішний `up --wait`
-підтверджує стан контейнерів; випуск сертифіката може ще тривати. HTTPS перевіряйте
+Caddy створює й оновлює локальний сертифікат без звернення до ACME. Успішний
+`up --wait` підтверджує стан контейнерів. Публічний HTTPS через Cloudflare перевіряйте
 командою `verify.py` без `-k` чи вимкнення TLS-перевірки.
 
 Для перевірки обмеження запитів, після нового часового вікна:
 
 ```sh
-python3 verify.py https://echo.example.com/ --rate-test
+python3 verify.py https://echo.devdays.net.ua/ --rate-test
 ```
 
 Команда робить до75 послідовних запитів і очікує HTTP429 з `Retry-After`; вона
@@ -54,24 +56,35 @@ python3 verify.py https://echo.example.com/ --rate-test
 Простий запит для перегляду відповіді:
 
 ```sh
-curl --fail --silent --show-error https://echo.example.com/ | python3 -m json.tool
+curl --fail --silent --show-error https://echo.devdays.net.ua/ | python3 -m json.tool
 ```
 
 ## Відповідь і довіра до IP
 
-`backend_peer` — адреса TCP-клієнта, яку бачить Caddy; `request_id` генерує сервер,
+`backend_peer` — клієнтська адреса з `CF-Connecting-IP`, якщо TCP-з'єднання прийшло
+з офіційної мережі Cloudflare. Відповідь позначена
+`peer_source: cloudflare_cf_connecting_ip` і `headers_view: after_cloudflare`.
+Для прямого з'єднання повертається фактична адреса TCP-клієнта Caddy,
+`peer_source: caddy_tcp_peer`; надісланим ним CF-заголовкам довіри немає.
+Cloudflare Worker subrequests відхиляються через іншу семантику IP.
+
+`request_id` генерує сервер,
 і той самий ID повертається в response-header `X-Request-ID`. Вхідний `X-Request-ID`
 повертається окремо в `headers`, щоб зіставити запит. `headers` містить тільки
 дозволені діагностичні поля: forwarding/identity headers, host, user-agent та request ID.
 Authorization, Proxy-Authorization і cookies не повертаються.
 
 Caddy перезаписує службовий `X-TG-Peer`, тому клієнт не може задати його сам.
-Оригінальний клієнтський `X-Forwarded-For` копіюється у службовий заголовок до зміни
+Отриманий Caddy `X-Forwarded-For` копіюється у службовий заголовок до зміни
 Caddy й повертається як діагностичне поле; джерелом довіреної IP він не є.
 Backend не має опублікованого порту та перебуває у внутрішній Docker-мережі.
-Не публікуйте8080 і не додавайте в цю мережу сторонні контейнери. Якщо перед Caddy
-стоїть інший reverse proxy/CDN, `backend_peer` покаже його адресу; така схема не
-підходить для цього тесту без окремо перевіреної моделі довіри.
+Не публікуйте8080 і не додавайте в цю мережу сторонні контейнери.
+Список довірених мереж у `cloudflare-ips.txt` звірений з офіційними IPv4/IPv6-списками
+08.09.2026; оновлюйте його явно після перевірки змін і перебудовуйте образ.
+Cloudflare може змінювати forwarding headers до передачі origin: це діагностика
+заголовків **після Cloudflare**, а не повний доказ відсутності початкових IP-витоків.
+Зокрема Cloudflare може прибирати `X-Real-IP`; не називайте таку перевірку повним
+аудитом анонімності. Інші reverse proxy без окремої конфігурації довіри не підтримуються.
 
 Endpoint приймає лише GET `/`; query/body відхиляються. Він нічого не проксіює,
 не зберігає payload і повертає `Cache-Control: no-store`. Rate limit — fixed window
@@ -99,11 +112,11 @@ Docker увімкнений на сервері. Сертифікати збер
 git pull --ff-only
 docker compose config --quiet
 docker compose up -d --build --wait
-python3 verify.py https://echo.example.com/
+python3 verify.py https://echo.devdays.net.ua/
 ```
 
 Базові образи закріплені manifest-digest. Оновлюйте їх явно після перевірки нової версії.
-`.env` містить лише домен, контакт ACME та rate settings; API credentials не потрібні.
+`.env` містить лише домен, rate settings; API credentials не потрібні.
 
 ## Тести
 
@@ -115,7 +128,10 @@ python3 -m unittest discover -s tests -v
 підтверджує публічний вихід через TransparentGateway: після розгортання потрібна
 окрема перевірка з gateway та клієнтської VM.
 
-Caddy: [автоматичний HTTPS](https://caddyserver.com/docs/automatic-https),
+Документація: [Cloudflare Full](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full/),
+[Caddy tls internal](https://caddyserver.com/docs/caddyfile/directives/tls),
+[Cloudflare HTTP headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/),
+[довірені IPv4](https://www.cloudflare.com/ips-v4), [IPv6](https://www.cloudflare.com/ips-v6),
 [налаштування runtime-логів](https://caddyserver.com/docs/caddyfile/options#log).
 
 Для інсталяції з архіву замість `git pull` оновіть файли з наступного релізу,

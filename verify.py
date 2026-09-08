@@ -38,21 +38,25 @@ def main():
             return response.status,response.headers,json.loads(body)
     status,headers,body=send(headers={'X-Request-ID':marker,'Authorization':'Bearer '+marker,
         'Cookie':'private='+marker,'Proxy-Authorization':'Basic '+marker,
-        'X-TG-Peer':'192.0.2.123','X-TG-Original-XFF':'spoofed','X-Forwarded-For':'198.51.100.44'})
+        'CF-Connecting-IP':'192.0.2.123','X-TG-Peer':'192.0.2.123','X-TG-Original-XFF':'spoofed','X-Forwarded-For':'198.51.100.44'})
     assert status==200, 'expected HTTP200; if rate-limited, wait for the configured window'
     peer=ipaddress.ip_address(body['backend_peer'])
     if url.hostname not in ('localhost','127.0.0.1','::1'):
         assert peer.is_global, 'endpoint must receive a public TCP peer'
     assert str(peer)!='192.0.2.123'
-    assert body['peer_source']=='caddy_tcp_peer'
+    assert body['peer_source'] in ('caddy_tcp_peer','cloudflare_cf_connecting_ip')
     assert headers.get('X-Request-ID')==body['request_id']
     assert body['headers']['x-request-id']==marker
-    assert body['headers']['x-forwarded-for']=='198.51.100.44'
+    if body['peer_source']=='caddy_tcp_peer':
+        assert body['headers']['x-forwarded-for']=='198.51.100.44'
+    else:
+        assert body['headers_view']=='after_cloudflare'
+        assert body['headers']['x-forwarded-for'].split(',')[0].strip()=='198.51.100.44'
     assert not any(k in body['headers'] for k in ['authorization','cookie','proxy-authorization','x-tg-peer','x-tg-original-xff'])
     assert headers.get('Cache-Control')=='no-store'
     assert headers.get('Strict-Transport-Security')
     print('PASS HTTPS certificate and hostname verification; HTTP 200')
-    print('PASS source IP='+str(peer)+'; spoofed internal peer header rejected')
+    print('PASS source IP='+str(peer)+'; source='+body['peer_source']+'; spoofed peer rejected')
     print('PASS diagnostic headers and fresh request ID='+body['request_id'])
     print('PASS Authorization/Cookie/Proxy-Authorization excluded; no-store enabled')
     for path,method,expected in [('?secret='+marker,'GET',400),('unknown','GET',404),('','POST',405)]:

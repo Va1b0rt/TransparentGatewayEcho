@@ -1,7 +1,6 @@
 {
 	admin off
 	persist_config off
-	email {$ACME_EMAIL}
 	log default {
 		exclude http.log.access http.log.error
 	}
@@ -17,6 +16,7 @@
 }
 
 {$ECHO_DOMAIN} {
+	tls internal
 	header Strict-Transport-Security "max-age=31536000"
 	reverse_proxy echo:8080 {
 		# Overwrite untrusted client values; the backend has no public port.

@@ -7,10 +7,21 @@ import sys
 import threading
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from server import RateLimiter, Server
+from server import RateLimiter, Server, resolve_peer
 
 
 class Tests(unittest.TestCase):
+    def test_cloudflare_identity_requires_trusted_transport(self):
+        self.assertEqual(resolve_peer({'X-TG-Peer':'1.1.1.1','CF-Connecting-IP':'8.8.8.8'}),
+                         ('1.1.1.1','caddy_tcp_peer'))
+        self.assertEqual(resolve_peer({'X-TG-Peer':'173.245.48.10','CF-Connecting-IP':'8.8.8.8'}),
+                         ('8.8.8.8','cloudflare_cf_connecting_ip'))
+        self.assertEqual(resolve_peer({'X-TG-Peer':'2606:4700::1','CF-Connecting-IP':'2001:4860:4860::8888'}),
+                         ('2001:4860:4860::8888','cloudflare_cf_connecting_ip'))
+        for extra in [{}, {'CF-Connecting-IP':'not-an-IP'}, {'CF-Connecting-IP':'192.168.1.1'},
+                      {'CF-Connecting-IP':'8.8.8.8','CF-Worker':'example.com'}]:
+            with self.assertRaises(ValueError): resolve_peer({'X-TG-Peer':'173.245.48.10',**extra})
+
     def test_rate_expiry_ipv6_and_capacity(self):
         now=[0]
         limiter=RateLimiter(limit=1, period=10,capacity=2,clock=lambda:now[0])

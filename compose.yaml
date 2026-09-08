@@ -27,7 +27,6 @@ services:
     restart: unless-stopped
     environment:
       ECHO_DOMAIN: ${ECHO_DOMAIN:?Set ECHO_DOMAIN in .env}
-      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
     ports:
       - '${HTTP_BIND:-0.0.0.0:80}:80'
       - '${HTTPS_BIND:-0.0.0.0:443}:443'

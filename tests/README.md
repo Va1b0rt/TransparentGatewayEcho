@@ -1,6 +1,6 @@
 Integration check used for this release:
 
-1. Deploy the unchanged Compose file with ECHO_DOMAIN=localhost, test email,
+1. Deploy the unchanged Compose file with ECHO_DOMAIN=localhost (no email),
    HTTP_BIND=127.0.0.1:18080, HTTPS_BIND=127.0.0.1:18443, RATE_LIMIT=8, RATE_PERIOD=10.
 2. Copy Caddy's local CA certificate from
    /data/caddy/pki/authorities/local/root.crt into an ignored local test directory.
@@ -11,5 +11,5 @@ Integration check used for this release:
    logs for them; log records must omit them.
 6. Restart the stack, verify HTTPS again, then remove only the test stack and test volumes.
 
-This does not test public ACME issuance or public routing. Those checks require the
+This checks local-CA TLS without ACME; it does not test public Cloudflare routing. That requires the
 operator's remote server and real DNS and are performed after deployment.
