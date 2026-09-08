@@ -3,11 +3,34 @@
 import argparse
 import ipaddress
 import json
+import re
 import ssl
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 import uuid
+
+
+class ResponseFormatError(ValueError):
+    """Safe transport diagnostics, without response payload or request values."""
+
+
+def decode_response(body, status, headers, stage):
+    try:
+        return json.loads(body)
+    except (ValueError, UnicodeError):
+        content_type = headers.get('Content-Type', '').split(';')[0].strip().lower()
+        if content_type not in ('application/json', 'text/html', 'text/plain'):
+            content_type = 'other_or_missing'
+        ray = headers.get('CF-Ray', '')
+        if not re.fullmatch(r'[a-fA-F0-9]{16,32}-[A-Za-z]{3}', ray):
+            ray = 'unavailable'
+        challenge = headers.get('CF-Mitigated', '') == 'challenge'
+        edge_code = re.fullmatch(rb'error code: ([0-9]{4})\s*', body)
+        edge_code = int(edge_code.group(1)) if edge_code else None
+        raise ResponseFormatError(json.dumps({'stage': stage, 'http_status': status,
+            'content_type': content_type, 'cloudflare_challenge': challenge,
+            'cf_ray': ray, 'edge_error_code': edge_code}, separators=(',', ':'))) from None
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -28,17 +51,19 @@ def main():
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect(),urllib.request.HTTPSHandler(context=context))
     base=args.url.rstrip('/')+'/'
     marker=uuid.uuid4().hex
-    def send(path='',headers=None,method='GET'):
-        request=urllib.request.Request(base+path,headers=headers or {},method=method)
+    def send(path='',headers=None,method='GET',stage='identity_headers', allow_forbidden=False):
+        request=urllib.request.Request(base+path,headers={'User-Agent':'TG-Echo-Verify/1.0', **(headers or {})},method=method)
         try: response=opener.open(request,timeout=15)
         except urllib.error.HTTPError as error: response=error
         with response:
             body=response.read(65537)
             assert len(body)<=65536
-            return response.status,response.headers,json.loads(body)
+            if allow_forbidden and response.status==403:
+                return response.status,response.headers,None
+            return response.status,response.headers,decode_response(body, response.status, response.headers, stage)
     status,headers,body=send(headers={'X-Request-ID':marker,'Authorization':'Bearer '+marker,
         'Cookie':'private='+marker,'Proxy-Authorization':'Basic '+marker,
-        'CF-Connecting-IP':'192.0.2.123','X-TG-Peer':'192.0.2.123','X-TG-Original-XFF':'spoofed','X-Forwarded-For':'198.51.100.44'})
+        'X-TG-Peer':'192.0.2.123','X-TG-Original-XFF':'spoofed','X-Forwarded-For':'198.51.100.44'})
     assert status==200, 'expected HTTP200; if rate-limited, wait for the configured window'
     peer=ipaddress.ip_address(body['backend_peer'])
     if url.hostname not in ('localhost','127.0.0.1','::1'):
@@ -59,13 +84,20 @@ def main():
     print('PASS source IP='+str(peer)+'; source='+body['peer_source']+'; spoofed peer rejected')
     print('PASS diagnostic headers and fresh request ID='+body['request_id'])
     print('PASS Authorization/Cookie/Proxy-Authorization excluded; no-store enabled')
+    code,_,spoof_body=send(headers={'CF-Connecting-IP':'192.0.2.123'},
+                           stage='cf_identity_spoof', allow_forbidden=True)
+    if code==403:
+        print('PASS forged CF-Connecting-IP rejected with HTTP 403; backend handling not exercised by this probe')
+    else:
+        assert code==200 and spoof_body['backend_peer']==str(peer), 'forged CF identity changed peer'
+        print('PASS forged CF-Connecting-IP did not change source IP')
     for path,method,expected in [('?secret='+marker,'GET',400),('unknown','GET',404),('','POST',405)]:
-        code,_,response=send(path,method=method)
+        code,_,response=send(path,method=method,stage='reject_query' if path.startswith('?') else 'reject_path' if path else 'reject_method')
         assert code==expected and marker not in json.dumps(response)
     print('PASS query/path/method rejection without reflecting supplied data')
     if args.rate_test:
         for _ in range(75):
-            code,response_headers,_=send()
+            code,response_headers,_=send(stage='rate_limit')
             if code==429:
                 assert int(response_headers['Retry-After'])>0
                 print('PASS rate limit: HTTP 429 and Retry-After')
@@ -79,4 +111,6 @@ if __name__=='__main__':
     try: main()
     except Exception as error:
         print('ECHO_CHECK FAILED: '+type(error).__name__+'; no response payload displayed')
+        if isinstance(error, ResponseFormatError):
+            print(str(error))
         raise SystemExit(1)

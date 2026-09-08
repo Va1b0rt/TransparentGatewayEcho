@@ -120,6 +120,27 @@ python3 verify.py https://echo.devdays.net.ua/ --rate-test
 curl --fail --silent --show-error https://echo.devdays.net.ua/ | python3 -m json.tool
 ```
 
+## Перший публічний запуск: HTTP 403 замість JSON
+
+08.09.2026 після налаштування NPM перший запуск `verify.py` завершився
+`ECHO_CHECK FAILED: JSONDecodeError; no response payload displayed`.
+Звичайний curl отримував HTTP200/JSON. Порівняння клієнтів показало:
+стандартний `Python-urllib/3.8` отримував HTTP403 з `error code: 1010`,
+а `TG-Echo-Verify/1.0` — HTTP200. Окремо вхідний підроблений
+`CF-Connecting-IP` отримував HTTP403 ще на публічному маршруті.
+
+Виправлення: власний відкрито названий User-Agent перевіряльника; окрема проба
+підробленого CF-заголовка, що приймає HTTP403 як відхилення запиту або HTTP200
+лише з незмінною IP. Відхилення цієї проби не доводить обробку заголовка backend;
+це явно зазначено у виводі. Решта тестів, зокрема підроблений `X-TG-Peer`,
+обов'язково має дійти до JSON-відповіді backend.
+Помилки не-JSON тепер показують етап, HTTP-статус, обмежені метадані й код
+Cloudflare, без виведення response body. Налаштування Cloudflare не змінювали.
+Після виправлення публічна перевірка з ARIS пройшла, включно з HTTP429/Retry-After.
+Це ще не перевірка виходу із клієнтської VM через gateway.
+
+[Cloudflare 1010](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/).
+
 ## Відповідь і довіра до IP
 
 `backend_peer` — клієнтська адреса з `CF-Connecting-IP`, якщо TCP-з'єднання прийшло
