@@ -1,4 +1,4 @@
-"""Bounded diagnostic HTTP backend, reachable only by the bundled TLS proxy."""
+"""Bounded diagnostic HTTP backend, reachable only by a trusted TLS proxy."""
 import ipaddress
 import json
 import os
@@ -21,10 +21,10 @@ CLOUDFLARE_NETWORKS = tuple(ipaddress.ip_network(line.strip()) for line in
     if line.strip() and not line.startswith('#'))
 
 
-def resolve_peer(headers):
+def resolve_peer(headers, proxy_kind='caddy'):
     transport = ipaddress.ip_address(headers.get('X-TG-Peer', ''))
     if any(transport in network for network in CLOUDFLARE_NETWORKS):
-        # Only the bundled Caddy can set the transport peer. Never trust CF headers
+        # Only the configured trusted proxy can set the transport peer. Never trust CF headers
         # merely because a direct Internet client supplied them.
         if headers.get('CF-Worker'):
             raise ValueError('Worker subrequests have different identity semantics')
@@ -32,7 +32,7 @@ def resolve_peer(headers):
         if not peer.is_global:
             raise ValueError('public Cloudflare client identity required')
         return str(peer), 'cloudflare_cf_connecting_ip'
-    return str(transport), 'caddy_tcp_peer'
+    return str(transport), proxy_kind + '_tcp_peer'
 
 
 class RateLimiter:
@@ -97,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/healthz' and self.client_address[0] == '127.0.0.1':
                 self.reply(200, {'status':'ok'}, log=False)
                 return
-            peer, peer_source = resolve_peer(self.headers)
+            peer, peer_source = resolve_peer(self.headers, os.getenv('PROXY_KIND', 'caddy'))
             if not self.server.limiter.allow(peer):
                 self.reply(429, {'error':'rate_limited'}, {'Retry-After':str(self.server.limiter.period)})
                 return

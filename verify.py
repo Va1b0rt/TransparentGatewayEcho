@@ -44,10 +44,10 @@ def main():
     if url.hostname not in ('localhost','127.0.0.1','::1'):
         assert peer.is_global, 'endpoint must receive a public TCP peer'
     assert str(peer)!='192.0.2.123'
-    assert body['peer_source'] in ('caddy_tcp_peer','cloudflare_cf_connecting_ip')
+    assert body['peer_source'] in ('caddy_tcp_peer','npm_tcp_peer','cloudflare_cf_connecting_ip')
     assert headers.get('X-Request-ID')==body['request_id']
     assert body['headers']['x-request-id']==marker
-    if body['peer_source']=='caddy_tcp_peer':
+    if body['peer_source'] in ('caddy_tcp_peer', 'npm_tcp_peer'):
         assert body['headers']['x-forwarded-for']=='198.51.100.44'
     else:
         assert body['headers_view']=='after_cloudflare'

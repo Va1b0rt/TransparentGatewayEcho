@@ -22,6 +22,14 @@ class Tests(unittest.TestCase):
                       {'CF-Connecting-IP':'8.8.8.8','CF-Worker':'example.com'}]:
             with self.assertRaises(ValueError): resolve_peer({'X-TG-Peer':'173.245.48.10',**extra})
 
+    def test_npm_identity(self):
+        self.assertEqual(resolve_peer({'X-TG-Peer': '1.1.1.1',
+                         'CF-Connecting-IP': '8.8.8.8'}, 'npm'),
+                         ('1.1.1.1', 'npm_tcp_peer'))
+        self.assertEqual(resolve_peer({'X-TG-Peer': '173.245.48.10',
+                         'CF-Connecting-IP': '8.8.8.8'}, 'npm'),
+                         ('8.8.8.8', 'cloudflare_cf_connecting_ip'))
+
     def test_rate_expiry_ipv6_and_capacity(self):
         now=[0]
         limiter=RateLimiter(limit=1, period=10,capacity=2,clock=lambda:now[0])

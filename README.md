@@ -3,6 +3,67 @@
 Окремий HTTPS echo endpoint для перевірки вихідної IP та заголовків TransparentGateway.
 Docker Compose запускає Caddy і невеликий Python backend без сторонніх Python-залежностей.
 
+## Розгортання за Nginx Proxy Manager (smhost)
+
+Для наявного NPM `nginx-proxy-manager_app_1` у мережі
+`nginx-proxy-manager_default` використовуйте **окремий** файл Compose нижче.
+Він запускає тільки echo, без Caddy та без опублікованих портів.
+Мережа NPM має вже існувати. Її контейнери входять у межу довіри backend:
+не підключайте до неї недовірені застосунки. Для іншої назви задайте `NPM_NETWORK` у `.env`.
+
+На `root@smhost` (`203.0.113.10`), у каталозі `~/TransparentGatewayEcho`:
+
+```sh
+git pull --ff-only
+docker compose -f compose.npm.yaml config --quiet
+docker compose -f compose.npm.yaml up -d --build --wait --remove-orphans
+docker compose -f compose.npm.yaml ps
+```
+
+`--remove-orphans` прибирає Caddy лише з цього echo-проєкту; NPM — окремий проєкт.
+Для всіх наступних операцій цього варіанта завжди додавайте `-f compose.npm.yaml`.
+Старі `HTTP_BIND`, `HTTPS_BIND` та `ECHO_DOMAIN` цим варіантом не використовуються.
+
+У NPM створіть/відредагуйте Proxy Host:
+
+| Поле | Значення |
+|---|---|
+| Domain Names | `echo.devdays.net.ua` |
+| Scheme | `http` |
+| Forward Hostname / IP | `tg-public-echo` |
+| Forward Port | `8080` |
+| Cache Assets / Block Common Exploits / Websockets | вимкнено |
+| Access List | Publicly Accessible |
+| Custom Locations | порожньо |
+| SSL | дійсний сертифікат для `echo.devdays.net.ua` |
+| Force SSL | увімкнено |
+
+У вкладку **Advanced** скопіюйте **весь** вміст `npm-advanced.conf`,
+потім збережіть. Без цього блоку перевірка IP не працюватиме правильно.
+Сертифікат випускається/поновлюється NPM. Cloudflare Proxied + Full може лишитися;
+Full (strict) можна використовувати з дійсним довіреним сертифікатом origin.
+
+```sh
+cat npm-advanced.conf
+docker exec nginx-proxy-manager_app_1 nginx -t
+python3 verify.py https://echo.devdays.net.ua/
+```
+
+Очікується `PUBLIC_ECHO_CHECK PASS`. Публічний порт — звичайний HTTPS443 NPM.
+Після нового rate window можна додати `--rate-test`.
+
+Advanced використовує `$realip_remote_addr`, щоб перевіряти саме TCP-адресу
+Cloudflare до переписування `$remote_addr` модулем realip NPM. Backend перевіряє
+її за списком Cloudflare і лише тоді довіряє `CF-Connecting-IP`. Прямі запити
+позначаються `npm_tcp_peer`. Заголовки діагностики зберігаються після Cloudflare,
+до стандартних доповнень NPM. Backend API і Caddy-варіант сумісні.
+
+Access/error logs вимкнено всередині echo location; backend лишає тільки
+згенерований request ID і статус. Це не вимикає глобальні логи NPM, TLS-помилки,
+логи відхилених до вибору location запитів або журнал Cloudflare. Не надсилайте
+production secrets у діагностичних запитах. Перевірка локального nginx не замінює
+перевірку фактичного NPM та публічного маршруту після збереження Proxy Host.
+
 ## Розгортання на віддаленому сервері
 
 Потрібні Docker Engine з Compose v2 та Cloudflare **Proxied + SSL/TLS Full**.
@@ -84,7 +145,7 @@ Backend не має опублікованого порту та перебув�
 Cloudflare може змінювати forwarding headers до передачі origin: це діагностика
 заголовків **після Cloudflare**, а не повний доказ відсутності початкових IP-витоків.
 Зокрема Cloudflare може прибирати `X-Real-IP`; не називайте таку перевірку повним
-аудитом анонімності. Інші reverse proxy без окремої конфігурації довіри не підтримуються.
+аудитом анонімності. Для NPM використовуйте окрему конфігурацію вище. Інші reverse proxy без окремої конфігурації довіри не підтримуються.
 
 Endpoint приймає лише GET `/`; query/body відхиляються. Він нічого не проксіює,
 не зберігає payload і повертає `Cache-Control: no-store`. Rate limit — fixed window
@@ -123,6 +184,20 @@ python3 verify.py https://echo.devdays.net.ua/
 ```sh
 python3 -m unittest discover -s tests -v
 ```
+
+Інтеграційний тест nginx (ізольований Compose, порт лише `127.0.0.1:18081`):
+
+```sh
+sudo docker compose -f tests/nginx/compose.yaml up -d --build --wait
+sudo docker compose -f tests/nginx/compose.yaml exec -T nginx nginx -t
+python3 tests/nginx/check.py
+sudo docker compose -f tests/nginx/compose.yaml down
+```
+
+Тест навмисно переписує nginx remote_addr та перевіряє збереження фізичного peer,
+відкидання підроблених службових/CF-заголовків, діагностичні поля, rate limit і
+відсутність секретного маркера у логах. `tests/nginx/nginx.conf` — тільки тестова
+конфігурація; для NPM використовуйте `npm-advanced.conf`.
 
 Цей репозиторій перевіряє сам echo endpoint. Успіх прямого запиту до нього ще не
 підтверджує публічний вихід через TransparentGateway: після розгортання потрібна
