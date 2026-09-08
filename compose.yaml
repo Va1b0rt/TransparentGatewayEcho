@@ -1,0 +1,53 @@
+name: transparent-gateway-echo
+services:
+  echo:
+    build: .
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      RATE_LIMIT: ${RATE_LIMIT:-60}
+      RATE_PERIOD: ${RATE_PERIOD:-60}
+    networks: [backend]
+    mem_limit: 128m
+    pids_limit: 64
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: '2'}
+  caddy:
+    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: unless-stopped
+    environment:
+      ECHO_DOMAIN: ${ECHO_DOMAIN:?Set ECHO_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+    ports:
+      - '${HTTP_BIND:-0.0.0.0:80}:80'
+      - '${HTTPS_BIND:-0.0.0.0:443}:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge, backend]
+    depends_on:
+      echo: {condition: service_healthy}
+    mem_limit: 256m
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: '2'}
+networks:
+  backend:
+    internal: true
+  edge:
+volumes:
+  caddy_data:
+  caddy_config:

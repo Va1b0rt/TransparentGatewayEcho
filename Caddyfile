@@ -1,0 +1,26 @@
+{
+	admin off
+	persist_config off
+	email {$ACME_EMAIL}
+	log default {
+		exclude http.log.access http.log.error
+	}
+	servers {
+		max_header_size 16KB
+		timeouts {
+			read_header 10s
+			read_body 10s
+			write 15s
+			idle 30s
+		}
+	}
+}
+
+{$ECHO_DOMAIN} {
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy echo:8080 {
+		# Overwrite untrusted client values; the backend has no public port.
+		header_up X-TG-Peer {http.request.remote.host}
+		header_up X-TG-Original-XFF {http.request.header.X-Forwarded-For}
+	}
+}
